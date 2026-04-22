@@ -1,4 +1,4 @@
-﻿using LlmTornado;
+using LlmTornado;
 using LlmTornado.Agents;
 using LlmTornado.Chat;
 using LlmTornado.Chat.Models;
@@ -20,36 +20,38 @@ public class EditorialReview
 
 class Program
 {
+    // CHANGE THIS to match the "Active Model" name shown at the top of your LM Studio
+    const string ModelName = "google/gemma-3-4b";
+
     static async Task Main()
     {
-        // Setup API connection to LM Studio
-        TornadoApi api = new TornadoApi(
-            new Uri("http://127.0.0.1:1234"),
-            string.Empty,
-            LLmProviders.OpenAi);
+        // PART 1: Setup connection to LM Studio
+        // Added /v1 to the URL which is common for local servers
+        TornadoApi api = new TornadoApi(new Uri("http://localhost:1234/v1"), "no-key-required", LLmProviders.OpenAi);
 
         TornadoAgent writer = CreateWriterAgent(api);
         TornadoAgent editor = CreateEditorAgent(api);
 
-        // UX Improvement: Welcome Message
+        // PART 4: UX - Welcome Message
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("================================================");
-        Console.WriteLine("   WELCOME TO THE AI MULTI-AGENT NEWSROOM");
-        Console.WriteLine("================================================");
+        Console.WriteLine("======================================================");
+        Console.WriteLine("   AI WRITING PIPELINE: WRITER & EDITOR AGENTS");
+        Console.WriteLine("======================================================");
         Console.ResetColor();
 
+        // PART 2: Continuous loop
         while (true)
         {
-            // UX Improvement: Command Menu / Writing Type Selection
-            Console.WriteLine("\nSelect a writing type:");
-            Console.WriteLine("1. Tutorial");
-            Console.WriteLine("2. Announcement");
-            Console.WriteLine("3. Product Description");
+            // PART 4: UX - Command Menu / Writing Types
+            Console.WriteLine("\n[ MAIN MENU ]");
+            Console.WriteLine("1. Write a Tutorial");
+            Console.WriteLine("2. Write an Announcement");
+            Console.WriteLine("3. Write a Product Description");
             Console.WriteLine("Type 'exit' to quit.");
             Console.Write("\nSelection > ");
 
-            string choice = Console.ReadLine() ?? "";
-            if (choice.ToLower() == "exit") break;
+            string choice = Console.ReadLine()?.ToLower() ?? "";
+            if (choice == "exit") break;
 
             string type = choice switch
             {
@@ -59,14 +61,14 @@ class Program
                 _ => "General Article"
             };
 
-            Console.Write($"\nEnter the topic for your {type}: ");
+            Console.Write($"\nEnter the topic for your {type} (or 'back'): ");
             string? taskInput = Console.ReadLine();
 
-            if (string.IsNullOrWhiteSpace(taskInput)) continue;
+            if (string.IsNullOrWhiteSpace(taskInput) || taskInput.ToLower() == "back") continue;
+            if (taskInput.ToLower() == "exit") break;
 
             string task = $"Type: {type}. Topic: {taskInput}";
             string currentDraft = "";
-            bool isApproved = false;
             int maxRounds = 3;
 
             // PART 3: Two-Agent Revision Pipeline
@@ -74,78 +76,80 @@ class Program
             {
                 PrintHeader($"--- ROUND {round} ---", ConsoleColor.Yellow);
 
-                // 1. Writer creates or revises the draft
+                // 1. WRITER STEP
                 if (round == 1)
                 {
+                    Console.WriteLine("Writer is drafting...");
                     currentDraft = await GenerateDraftAsync(writer, task);
                 }
                 else
                 {
-                    // For revisions, we pass the previous draft and tasks
-                    currentDraft = await GenerateRevisionAsync(writer, task, currentDraft);
+                    Console.WriteLine("Writer is revising based on editor feedback...");
+                    // We send the current draft back to the writer for improvement
+                    currentDraft = await GenerateDraftAsync(writer, $"Please improve this draft based on the editor's goals: {currentDraft}");
                 }
 
-                PrintHeader("WRITER'S DRAFT:", ConsoleColor.Green);
-                Console.WriteLine(currentDraft);
-                Console.WriteLine($"\n(Word Count: {CountWords(currentDraft)})"); // UX Improvement: Word Count
+                if (currentDraft.StartsWith("ERROR")) break; // Stop if server is offline
 
-                // 2. Editor reviews the draft
+                // PART 4: UX - Color Coded Headings & Word Count
+                PrintHeader("DRAFT CONTENT:", ConsoleColor.Green);
+                Console.WriteLine(currentDraft);
+                Console.WriteLine($"\n[ Word Count: {CountWords(currentDraft)} ]");
+
+                // 2. EDITOR STEP
                 PrintHeader("EDITOR IS REVIEWING...", ConsoleColor.Magenta);
                 EditorialReview review = await ReviewDraftAsync(editor, task, currentDraft);
+
+                if (review.Status == ReviewStatus.Unknown)
+                {
+                    Console.WriteLine("Editor failed to provide a valid status. Proceeding to finalize.");
+                    break;
+                }
 
                 Console.WriteLine($"STATUS: {review.Status}");
                 Console.WriteLine($"RATIONALE: {review.Rationale}");
 
+                // PART 3: Check if we stop or revise
                 if (review.Status == ReviewStatus.Ready)
                 {
-                    isApproved = true;
+                    Console.WriteLine("\nEditor Approved!");
                     break;
                 }
-
-                if (review.RevisionTasks.Count > 0)
+                else
                 {
                     Console.WriteLine("REVISION TASKS:");
                     foreach (string item in review.RevisionTasks)
                     {
                         Console.WriteLine($"- {item}");
                     }
-                }
 
-                if (round == maxRounds)
-                {
-                    PrintHeader("REACHED MAXIMUM ROUNDS. FINALIZING...", ConsoleColor.Red);
+                    if (round == maxRounds)
+                        PrintHeader("MAX ROUNDS REACHED. FINALIZING.", ConsoleColor.Red);
                 }
             }
 
-            PrintHeader("=== FINAL OUTPUT ===", ConsoleColor.Blue);
+            // PART 4: Final output and save to file
+            PrintHeader("=== FINAL VERSION ===", ConsoleColor.Blue);
             Console.WriteLine(currentDraft);
 
-            // UX Improvement: Option to save to file
-            Console.Write("\nSave to file? (y/n): ");
+            Console.Write("\nSave this result to 'output.txt'? (y/n): ");
             if (Console.ReadLine()?.ToLower() == "y")
             {
-                File.WriteAllText("output.txt", currentDraft);
-                Console.WriteLine("Saved to output.txt");
+                await File.WriteAllTextAsync("output.txt", currentDraft);
+                Console.WriteLine("File saved successfully.");
             }
         }
     }
 
-    // --- AGENT CREATION ---
+    // --- AGENT DEFINITIONS ---
 
     static TornadoAgent CreateWriterAgent(TornadoApi api)
     {
         return new TornadoAgent(
             client: api,
-            model: new ChatModel("google/gemma-3-4b"),
+            model: new ChatModel(ModelName),
             name: "Writer",
-            instructions: """
-            You are a professional Writer for beginner readers. 
-            Your goal is to produce clear, engaging, and simple content.
-            
-            If you receive 'REVISION TASKS', you must rewrite the previous draft to address 
-            every single point mentioned by the editor. 
-            Return ONLY the revised text. Do not include conversational filler.
-            """
+            instructions: "You are a professional writer. Create clear, simple, and helpful content for beginners. Return ONLY the text of the draft."
         );
     }
 
@@ -153,72 +157,67 @@ class Program
     {
         return new TornadoAgent(
             client: api,
-            model: new ChatModel("google/gemma-3-4b"),
+            model: new ChatModel(ModelName),
             name: "Editor",
             instructions: """
-            You are a strict Senior Editor. You evaluate drafts for beginner-friendliness and clarity.
-            
-            CRITERIA:
-            1. Is the language simple? (No jargon)
-            2. Is the tone appropriate for the task type?
-            3. Are there clear headings or steps?
-
-            You MUST respond in this exact format:
+            You are a strict editor. Review the draft and respond in this EXACT format:
             STATUS: [READY or REVISE]
-            RATIONALE: [One sentence explanation]
+            RATIONALE: [One short reason why]
             REVISION TASKS:
-            - [Bullet point task]
-            
-            If the draft is perfect, set STATUS: READY and leave REVISION TASKS empty.
-            If there are ANY issues, set STATUS: REVISE.
+            - [List specific changes needed]
             """
         );
     }
 
-    // --- API LOGIC ---
+    // --- API LOGIC WITH ERROR HANDLING ---
 
-    static async Task<string> GenerateDraftAsync(TornadoAgent writer, string task)
+    static async Task<string> GenerateDraftAsync(TornadoAgent writer, string prompt)
     {
-        Conversation conversation = await writer.Run(input: $"Write a first draft for: {task}");
-        return GetLastAssistantText(conversation);
-    }
-
-    static async Task<string> GenerateRevisionAsync(TornadoAgent writer, string task, string previousDraft)
-    {
-        // In a real scenario, you'd pass the editor's feedback here too.
-        Conversation conversation = await writer.Run(input: $"Here is the previous draft: {previousDraft}. Please improve it based on the requirements for: {task}");
-        return GetLastAssistantText(conversation);
+        try
+        {
+            Conversation conversation = await writer.Run(input: prompt);
+            return GetLastAssistantText(conversation);
+        }
+        catch (Exception ex)
+        {
+            return $"ERROR: Could not connect to LM Studio. Make sure the server is running. ({ex.Message})";
+        }
     }
 
     static async Task<EditorialReview> ReviewDraftAsync(TornadoAgent editor, string task, string draft)
     {
-        Conversation conversation = await editor.Run(input: $"TASK: {task}\nDRAFT: {draft}");
-        string response = GetLastAssistantText(conversation);
-        return ParseReview(response);
+        try
+        {
+            Conversation conversation = await editor.Run(input: $"Task: {task}\nDraft: {draft}");
+            string response = GetLastAssistantText(conversation);
+            return ParseReview(response);
+        }
+        catch
+        {
+            return new EditorialReview { Status = ReviewStatus.Unknown, Rationale = "Connection error." };
+        }
     }
 
     // --- UTILITIES ---
 
-    // TODO 3: Robust Parsing Logic
     static EditorialReview ParseReview(string response)
     {
         var review = new EditorialReview();
-        string[] lines = response.Split('\n');
+        string[] lines = response.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         bool parsingTasks = false;
 
         foreach (var line in lines)
         {
-            if (line.StartsWith("STATUS:", StringComparison.OrdinalIgnoreCase))
+            if (line.Contains("STATUS:", StringComparison.OrdinalIgnoreCase))
             {
-                string val = line.Replace("STATUS:", "").Trim();
-                if (val.Contains("READY", StringComparison.OrdinalIgnoreCase)) review.Status = ReviewStatus.Ready;
-                else review.Status = ReviewStatus.Revise;
+                if (line.Contains("READY", StringComparison.OrdinalIgnoreCase)) review.Status = ReviewStatus.Ready;
+                else if (line.Contains("REVISE", StringComparison.OrdinalIgnoreCase)) review.Status = ReviewStatus.Revise;
             }
-            else if (line.StartsWith("RATIONALE:", StringComparison.OrdinalIgnoreCase))
+            else if (line.Contains("RATIONALE:", StringComparison.OrdinalIgnoreCase))
             {
-                review.Rationale = line.Replace("RATIONALE:", "").Trim();
+                review.Rationale = line.Split(':', 2).Last().Trim();
             }
-            else if (line.StartsWith("REVISION TASKS:", StringComparison.OrdinalIgnoreCase))
+            else if (line.Contains("REVISION TASKS:", StringComparison.OrdinalIgnoreCase))
             {
                 parsingTasks = true;
             }
@@ -232,7 +231,7 @@ class Program
 
     static string GetLastAssistantText(Conversation conversation)
     {
-        return conversation.Messages.LastOrDefault()?.Content ?? "No response received.";
+        return conversation.Messages.LastOrDefault()?.Content?.Trim() ?? "No response.";
     }
 
     static void PrintHeader(string text, ConsoleColor color)
@@ -242,5 +241,5 @@ class Program
         Console.ResetColor();
     }
 
-    static int CountWords(string text) => text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+    static int CountWords(string text) => text.Split(new[] { ' ', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries).Length;
 }
